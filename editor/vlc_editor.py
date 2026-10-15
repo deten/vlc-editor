@@ -1377,7 +1377,16 @@ def selftest(report: str | None) -> int:
         player.release()
         instance.release()
         lines.append(f"frames played: {len(frames)}")
-        assert len(frames) >= 10, "libvlc did not play the video"
+        if len(frames) < 10:
+            # play again with VLC's error log on stderr to show why (e.g. a missing decoder)
+            debug = vlc.Instance(["--verbose=1", "--no-audio"])
+            debug_player = debug.media_player_new()
+            FrameSink(debug_player, info.width, info.height)
+            debug_player.set_media(debug.media_new_path(str(src)))
+            debug_player.play()
+            time.sleep(5)
+            debug_player.stop()
+            raise AssertionError("libvlc did not play the video (VLC log above)")
         lines.append("SELFTEST OK")
     except Exception:  # noqa: BLE001 - report whatever broke
         ok = False
