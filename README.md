@@ -2,6 +2,12 @@
 
 Quick mobile-style video clipping (trim, crop, slow-mo) launched from VLC.
 
+![Trimming a clip](docs/screenshots/trim.png)
+
+| Crop | Slow-mo |
+|------|---------|
+| ![Cropping to 9:16](docs/screenshots/crop.png) | ![Slowing part of the clip to 1/4 speed](docs/screenshots/slowmo.png) |
+
 ## Use
 
 1. Open a video in VLC and choose **View > Edit Video**. VLC pauses and the editor opens
