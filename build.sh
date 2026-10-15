@@ -78,6 +78,32 @@ if [ -n "$VLC_COPIES" ]; then
     echo "$VLC_COPIES" | while IFS= read -r f; do rm -f "$f"; done
 fi
 
+# Linux: drop the build machine's copies of standard system libraries. Every desktop has them,
+# and an older bundled copy shadows the system one for VLC's plugins too (e.g. libstdc++
+# from Ubuntu 22.04 stops VLC's H.264 decoder loading on Fedora). Kept: Python, Qt and the
+# small xcb helper libraries Qt needs that aren't always installed.
+if [ "$(uname -s)" = Linux ]; then
+    INTERNAL=$BUILD/pyinstaller/dist/vlc-editor/_internal
+    SYSTEM_LIBS="libstdc++ libgcc_s libmvec libglib libgio libgobject libgmodule libgthread libffi libpcre
+        libdbus libsystemd libselinux libmount libblkid libuuid libcap libbsd libmd libz. libzstd liblzma
+        liblz4 libbz2 libexpat libgcrypt libgpg-error libcrypto libssl libgssapi libkrb5 libk5crypto
+        libcom_err libkeyutils libidn libX11 libXau libXdmcp libXext libXrender libXfixes libXi libXrandr
+        libXcursor libXinerama libXcomposite libXdamage libxcb-render. libxcb-shm libxcb-shape libxcb-sync
+        libxcb-xfixes libxcb-randr libxcb-glx libxkbcommon. libfreetype libfontconfig libharfbuzz
+        libpng16 libbrotli libgraphite2 libgtk-3 libgdk-3 libgdk_pixbuf libatk libatspi libpango libcairo
+        libpixman libepoxy libfribidi libthai libdatrie libjpeg"
+    removed=0
+    for lib in $SYSTEM_LIBS; do
+        for f in "$INTERNAL/$lib"*; do
+            [ -e "$f" ] || [ -L "$f" ] || continue
+            rm -f "$f"
+            removed=$((removed + 1))
+        done
+    done
+    echo "Removed $removed bundled system libraries; still bundled:"
+    ls "$INTERNAL" | grep '\.so' | grep -vE '^(libpython|libQt6|libpyside|libshiboken|libicu)' | tr '\n' ' '; echo
+fi
+
 STAGE=$BUILD/stage
 if [ "$(uname -s)" = Darwin ]; then
     mkdir -p "$STAGE"
