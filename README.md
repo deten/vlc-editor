@@ -1,6 +1,6 @@
 # VLC Editor
 
-Quick "phone-gallery-style" editing (trim, crop, slow-mo) launched from VLC.
+Quick mobile-style video clipping (trim, crop, slow-mo) launched from VLC.
 
 ## Use
 
