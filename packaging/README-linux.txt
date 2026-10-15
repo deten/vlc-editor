@@ -10,6 +10,7 @@ Requirements
 
     Ubuntu / Debian:  sudo apt install vlc
     Fedora:           enable RPM Fusion (https://rpmfusion.org/Configuration), then
+                      sudo dnf swap ffmpeg-free ffmpeg --allowerasing
                       sudo dnf install vlc vlc-plugins-freeworld
                       (RPM Fusion lets VLC play phone videos: H.264 / HEVC)
 

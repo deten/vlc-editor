@@ -24,6 +24,7 @@ if ! has_lib 'libvlc\.so\.5'; then
     echo "Install it from your distribution, then run this again:"
     echo "  Ubuntu / Debian:  sudo apt install vlc"
     echo "  Fedora:           enable RPM Fusion (https://rpmfusion.org/Configuration), then"
+    echo "                    sudo dnf swap ffmpeg-free ffmpeg --allowerasing"
     echo "                    sudo dnf install vlc vlc-plugins-freeworld"
     exit 1
 fi

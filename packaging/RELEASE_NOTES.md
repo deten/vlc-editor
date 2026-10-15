@@ -27,7 +27,8 @@ All versions need VLC 3.x installed. Python and ffmpeg are included.
 ### Linux (Ubuntu and Fedora)
 1. Install VLC from your distribution, not Flatpak/Snap:
    - Ubuntu: `sudo apt install vlc`
-   - Fedora: enable [RPM Fusion](https://rpmfusion.org/Configuration), then `sudo dnf install vlc vlc-plugins-freeworld`
+   - Fedora: enable [RPM Fusion](https://rpmfusion.org/Configuration), then
+     `sudo dnf swap ffmpeg-free ffmpeg --allowerasing` and `sudo dnf install vlc vlc-plugins-freeworld`
 2. `tar -xzf VLC-Editor-*-linux-x86_64.tar.gz && ./vlc-editor/install.sh`
 3. Restart VLC, open a video, then choose **View > Edit Video**.
 

@@ -53,7 +53,8 @@ double-click the app, click **Done**, and choose **Open Anyway** in
 
 **Linux:** use VLC from your distribution, not Flatpak/Snap (they're sandboxed).
 Ubuntu: `sudo apt install vlc`. Fedora: enable [RPM Fusion](https://rpmfusion.org/Configuration),
-then `sudo dnf install vlc vlc-plugins-freeworld` (needed to play phone H.264/HEVC video).
+then `sudo dnf swap ffmpeg-free ffmpeg --allowerasing` and
+`sudo dnf install vlc vlc-plugins-freeworld` (needed to play phone H.264/HEVC video).
 
 ## Run from source
 
