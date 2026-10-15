@@ -70,4 +70,4 @@ python3 -m venv .venv
 - Windows: `powershell -ExecutionPolicy Bypass -File build.ps1`
 - Mac / Linux: `./build.sh`
 
-Packages go to `dist/`. Pushing a `v*` tag builds, tests and publishes all of them.
+Packages go to `dist/`. Pushing a `v*` tag builds and tests all of them.
