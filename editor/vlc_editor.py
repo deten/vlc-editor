@@ -1357,6 +1357,12 @@ def selftest(report: str | None) -> int:
         app = QApplication.instance() or QApplication([])
         lines.append(f"libvlc: {vlc.libvlc_get_version().decode()}")
         instance = vlc.Instance(["--quiet", "--no-audio"])
+        if instance is None:
+            # rerun with VLC's own logging so the reason lands on stderr
+            vlc.Instance(["--verbose=2", "--no-audio"])
+            lines.append(f"LD_LIBRARY_PATH={os.environ.get('LD_LIBRARY_PATH')}")
+            lines.append(f"VLC_PLUGIN_PATH={os.environ.get('VLC_PLUGIN_PATH')}")
+            raise AssertionError("libvlc found but could not start (VLC log above)")
         player = instance.media_player_new()
         sink = FrameSink(player, info.width, info.height)
         frames = []
