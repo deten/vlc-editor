@@ -1,6 +1,4 @@
-# VLC Editor installer, run from the unzipped package via Install.cmd / Uninstall.cmd.
-# Installs per-user (no admin): program to %LOCALAPPDATA%\Programs\VLC Editor,
-# the "View > Edit Video" extension to %APPDATA%\vlc\lua\extensions, and a Start menu shortcut.
+# VLC Editor installer (run by Install.cmd / Uninstall.cmd).
 param([switch]$Uninstall)
 $ErrorActionPreference = 'Stop'
 
@@ -21,7 +19,7 @@ if ($Uninstall) {
     return
 }
 
-# The editor plays video through the installed VLC, which must be the 64-bit build.
+# needs 64-bit VLC
 $vlcDir = $null
 try { $vlcDir = (Get-ItemProperty 'HKLM:\SOFTWARE\VideoLAN\VLC' -ErrorAction Stop).InstallDir } catch {}
 if (-not ($vlcDir -and (Test-Path (Join-Path $vlcDir 'libvlc.dll')))) { $vlcDir = "$env:ProgramFiles\VideoLAN\VLC" }
@@ -36,13 +34,13 @@ Write-Host "Installing to $dest ..."
 if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
 New-Item -ItemType Directory -Force $dest | Out-Null
 Copy-Item (Join-Path $src 'app\*') $dest -Recurse -Force
-# files unzipped from a download are flagged as "from the internet"; clear that so Windows doesn't block the exe
+# unblock downloaded files
 Get-ChildItem $dest -Recurse -File | Unblock-File
 
 $exe = Join-Path $dest 'VLC Editor.exe'
 $launchPath = $exe
 if ($launchPath -match '[^\x00-\x7F]') {
-    # VLC's Lua passes the command through the ANSI code page; use the 8.3 short path for non-ASCII user names
+    # short path for non-ASCII user names
     $launchPath = (New-Object -ComObject Scripting.FileSystemObject).GetFile($exe).ShortPath
 }
 New-Item -ItemType Directory -Force (Split-Path $extFile) | Out-Null

@@ -1,5 +1,5 @@
-# Installs VLC Editor: Python venv + packages, tool paths, and the VLC "Edit Video" extension.
-# Run from PowerShell:  powershell -ExecutionPolicy Bypass -File install.ps1
+# Sets up VLC Editor from source.
+# Run: powershell -ExecutionPolicy Bypass -File install.ps1
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 $venvPy = Join-Path $root '.venv\Scripts\python.exe'

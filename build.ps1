@@ -1,5 +1,5 @@
-# Builds dist\VLC-Editor-<version>-windows-x64.zip: a standalone package for other PCs (only VLC needed there).
-# Run from PowerShell:  powershell -ExecutionPolicy Bypass -File build.ps1
+# Builds the Windows package into dist\.
+# Run: powershell -ExecutionPolicy Bypass -File build.ps1
 $ErrorActionPreference = 'Stop'
 $version = (Get-Content (Join-Path $PSScriptRoot 'VERSION') -TotalCount 1).Trim()
 $root = $PSScriptRoot
@@ -11,7 +11,7 @@ $dist = Join-Path $root 'dist'
 $ffmpegZip = Join-Path $build 'cache\ffmpeg-shared.zip'
 $ffmpegUrl = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n9.0-latest-win64-gpl-shared-9.0.zip'
 
-# 1. Editor -> "VLC Editor.exe" (bundles Python + Qt; libvlc comes from the installed VLC)
+# 1. Editor
 & $py -m pip install --quiet --disable-pip-version-check pyinstaller
 & $py -m PyInstaller --noconfirm --clean --windowed --name 'VLC Editor' `
     --distpath (Join-Path $pyi 'dist') --workpath (Join-Path $pyi 'work') --specpath $pyi `
@@ -23,10 +23,10 @@ if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory -Force $stage | Out-Null
 $app = Join-Path $stage 'app'
 Copy-Item (Join-Path $pyi 'dist\VLC Editor') $app -Recurse
-# Qt's software-OpenGL fallback isn't used (all drawing is QPainter): drop it to save ~20 MB
+# not needed, saves ~20 MB
 Get-ChildItem $app -Recurse -Filter 'opengl32sw.dll' | Remove-Item -Force
 
-# 2. ffmpeg (shared build: ffmpeg + ffprobe share one set of DLLs)
+# 2. ffmpeg
 if (-not (Test-Path $ffmpegZip)) {
     New-Item -ItemType Directory -Force (Split-Path $ffmpegZip) | Out-Null
     Write-Host "Downloading $ffmpegUrl"
@@ -47,7 +47,7 @@ Copy-Item (Join-Path $root 'vlc_extension\vlc_editor.lua') $stage
 Copy-Item (Join-Path $root 'packaging\setup.ps1') $stage
 Copy-Item (Join-Path $root 'packaging\README-windows.txt') (Join-Path $stage 'README.txt')
 foreach ($cmd in 'Install.cmd', 'Uninstall.cmd') {
-    # batch files need CRLF line endings
+    # batch files need CRLF
     $text = [IO.File]::ReadAllText((Join-Path $root "packaging\$cmd")) -replace "`r?`n", "`r`n"
     [IO.File]::WriteAllText((Join-Path $stage $cmd), $text, (New-Object System.Text.ASCIIEncoding))
 }

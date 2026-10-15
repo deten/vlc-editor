@@ -1,22 +1,19 @@
--- VLC Editor: adds "Edit Video" to VLC's extensions menu
--- (View > Edit Video on Windows / Linux, VLC > Extensions > Edit Video on macOS).
--- Pauses playback and opens the editor on the current file at the current position.
--- The installer copies this into VLC's lua/extensions folder and fills in LAUNCH:
--- the editor command without arguments, e.g. "C:\...\VLC Editor.exe" or open -n -a '/Applications/VLC Editor.app' --args
+-- VLC Editor: adds "Edit Video" to VLC's menu.
+-- The installer fills in LAUNCH.
 
 local LAUNCH = [[@LAUNCH@]]
 
 function descriptor()
   return {
     title = "Edit Video",
-    version = "1.2",
+    version = "1.3",
     shortdesc = "Edit Video",
     description = "Trim, crop and slow-mo the current video.",
     capabilities = {},
   }
 end
 
--- Hex-encode so the URI survives the shell untouched (no %, &, ', spaces or non-ASCII characters).
+-- hex so the shell leaves it alone
 local function hex(s)
   return (s:gsub(".", function(c) return string.format("%02x", c:byte()) end))
 end
@@ -36,7 +33,7 @@ function activate()
   local ms = 0
   local input = vlc.object.input()
   if input then
-    -- VLC 3 reports "time" in microseconds
+    -- microseconds
     ms = math.floor((vlc.var.get(input, "time") or 0) / 1000)
   end
   if vlc.playlist.status() == "playing" then

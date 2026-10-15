@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# Builds the macOS or Linux package into dist/ (run on the system you are building for):
-#   macOS: dist/VLC-Editor-<version>-macos-arm64.zip / -macos-intel.zip   (VLC Editor.app)
-#   Linux: dist/VLC-Editor-<version>-linux-x86_64.tar.gz                  (folder with install.sh)
-# Uses .venv/bin/python (or $PYTHON) with requirements.txt installed.
+# Builds the macOS or Linux package into dist/.
+# Run it on the system you're building for.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")" && pwd)
 VERSION=$(head -n1 "$ROOT/VERSION" | tr -d '[:space:]')
@@ -14,7 +12,7 @@ FF=$BUILD/ffmpeg-bin
 mkdir -p "$CACHE" "$DIST"
 rm -rf "$FF" "$BUILD/stage" && mkdir -p "$FF"
 
-# download once into the cache; verify the checksum when one is given
+# download once, check the checksum
 fetch() {
     local url=$1 sum=$2 dest=$3
     [ -f "$dest" ] || curl -fsSL -o "$dest" "$url"
@@ -23,7 +21,7 @@ fetch() {
     fi
 }
 
-# ffmpeg 9.0.2 builds: martin-riedl.de (macOS, signed static) / BtbN (Linux, static GPL)
+# ffmpeg 9.0.2
 case "$(uname -s)-$(uname -m)" in
     Darwin-arm64)
         PLATFORM=macos-arm64
@@ -55,7 +53,7 @@ else
 fi
 chmod +x "$FF/ffmpeg" "$FF/ffprobe"
 
-# editor -> app bundle (Python + Qt + ffmpeg inside; libvlc comes from the installed VLC)
+# editor
 NAME="VLC Editor"
 [ "$(uname -s)" = Linux ] && NAME=vlc-editor
 "$PY" -m pip install --quiet --disable-pip-version-check pyinstaller
@@ -70,18 +68,14 @@ EXTRA=()
     --exclude-module tkinter --exclude-module unittest \
     "$ROOT/editor/vlc_editor.py"
 
-# libvlc must come from the user's installed VLC: a bundled copy looks for VLC's plugins
-# inside the app (finds none, so VLC won't start) and wouldn't match other distributions
+# use the installed VLC, not a bundled copy
 VLC_COPIES=$(find "$BUILD/pyinstaller/dist" -name 'libvlc*' \( -type f -o -type l \))
 if [ -n "$VLC_COPIES" ]; then
     echo "Removing bundled VLC libraries:"; echo "$VLC_COPIES"
     echo "$VLC_COPIES" | while IFS= read -r f; do rm -f "$f"; done
 fi
 
-# Linux: drop the build machine's copies of standard system libraries. Every desktop has them,
-# and an older bundled copy shadows the system one for VLC's plugins too (e.g. libstdc++
-# from Ubuntu 22.04 stops VLC's H.264 decoder loading on Fedora). Kept: Python, Qt and the
-# small xcb helper libraries Qt needs that aren't always installed.
+# Linux: use the system's own libraries (older bundled ones break VLC's plugins)
 if [ "$(uname -s)" = Linux ]; then
     INTERNAL=$BUILD/pyinstaller/dist/vlc-editor/_internal
     SYSTEM_LIBS="libstdc++ libgcc_s libmvec libglib libgio libgobject libgmodule libgthread libffi libpcre

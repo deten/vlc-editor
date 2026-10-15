@@ -1,6 +1,4 @@
-# Builds VLC Editor for Windows, macOS (Apple chip + Intel) and Linux, self-tests each
-# package with a real VLC, checks the Linux package on Fedora and Ubuntu 24.04, and
-# publishes a GitHub release when a v* tag is pushed. Run manually to just build + test.
+# Builds and tests all packages. A v* tag also publishes a release.
 name: Build and release
 
 on:
@@ -22,7 +20,7 @@ jobs:
           - { os: windows-latest, platform: windows-x64 }
           - { os: macos-14, platform: macos-arm64 }
           - { os: macos-15-intel, platform: macos-intel }
-          - { os: ubuntu-22.04, platform: linux-x86_64 }   # oldest supported glibc -> runs on newer distros
+          - { os: ubuntu-22.04, platform: linux-x86_64 }   # oldest glibc, so it runs on newer systems
     env:
       QT_QPA_PLATFORM: offscreen
     steps:

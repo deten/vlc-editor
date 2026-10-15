@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# VLC Editor installer for Linux (per user, no sudo needed).
+# VLC Editor installer for Linux.
 #   ./install.sh               install / update
 #   ./install.sh --uninstall   remove
 set -euo pipefail
@@ -18,7 +18,7 @@ fi
 LDCONFIG=$(command -v ldconfig || echo /sbin/ldconfig)
 has_lib() { "$LDCONFIG" -p 2>/dev/null | grep -q "$1"; }
 
-# The editor plays video through the system VLC library (libvlc).
+# needs the system VLC
 if ! has_lib 'libvlc\.so\.5'; then
     echo "VLC is not installed (or only as a Flatpak/Snap, which other programs can't use)."
     echo "Install it from your distribution, then run this again:"
@@ -56,7 +56,7 @@ echo
 echo "VLC Editor is installed."
 echo "  In VLC: open a video, then View > Edit Video (restart VLC first if it is open)."
 echo "  Or start \"VLC Editor\" from your applications menu."
-# Qt needs libxcb-cursor on X11 desktops; most Wayland desktops don't
+# Qt needs libxcb-cursor on X11
 if [ "${XDG_SESSION_TYPE:-}" != wayland ] && ! has_lib 'libxcb-cursor\.so\.0'; then
     echo
     echo "If VLC Editor doesn't open, install this library and try again:"

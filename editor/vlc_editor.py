@@ -1,9 +1,6 @@
-"""VLC Editor: trim, crop and slow-mo the video that is open in VLC.
+"""VLC Editor: trim, crop, rotate and slow-mo videos from VLC.
 
-Usage:
-    pythonw vlc_editor.py [<path or file:// uri> | --hexuri <hex-encoded uri>] [--time <ms>]
-
-With no file argument a file picker is shown.
+Usage: vlc_editor.py [file] [--time ms]
 """
 from __future__ import annotations
 
@@ -27,9 +24,9 @@ from pathlib import Path
 VLC_ERROR = None
 try:
     import vlc
-except (OSError, ImportError, NameError) as e:   # libvlc missing: reported nicely in main()
+except (OSError, ImportError, NameError) as e:   # VLC not installed
     vlc, VLC_ERROR = None, e
-from PySide6.QtCore import QObject, QPointF, QProcess, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QEasingCurve, QObject, QPointF, QProcess, QRectF, Qt, QTimer, QVariantAnimation, Signal
 from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QPainterPath, QPen, QShortcut, QTransform
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
@@ -40,9 +37,9 @@ IS_WINDOWS = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
 FROZEN = getattr(sys, "frozen", False)
 EXE = ".exe" if IS_WINDOWS else ""
-# packaged build: the folder holding the executable; from source: this script's folder
+# folder of the program (packaged) or this script
 APP_DIR = Path(sys.executable if FROZEN else __file__).resolve().parent
-# files bundled into the packaged build (ffmpeg, the VLC extension template)
+# bundled files (ffmpeg, extension template)
 BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", APP_DIR))
 CONFIG_FILE = APP_DIR / "config.json"
 if IS_WINDOWS:
@@ -52,8 +49,9 @@ elif IS_MAC:
 else:
     LOG_DIR = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "vlc-editor"
 ERROR_LOG = LOG_DIR / "last_error.log"
-PREVIEW_MAX = 1280       # longest side of the preview frames VLC renders for us
+PREVIEW_MAX = 1280       # max preview size
 MIN_CLIP_MS = 200
+ANIMATION_MS = 250
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 ACCENT = QColor("#ffc83d")   # trim handles / crop
@@ -84,11 +82,11 @@ def load_config() -> dict:
 
 
 def find_tool(name: str) -> str | None:
-    """Locate ffmpeg / ffprobe / vlc: config.json, bundled copy, PATH, then the usual install folders."""
+    """Find ffmpeg, ffprobe or vlc."""
     configured = load_config().get(name)
     if configured and Path(configured).is_file():
         return configured
-    for folder in (BUNDLE_DIR / "ffmpeg", APP_DIR / "ffmpeg"):   # shipped with the packaged build
+    for folder in (BUNDLE_DIR / "ffmpeg", APP_DIR / "ffmpeg"):   # bundled copy
         bundled = folder / (name + EXE)
         if bundled.is_file():
             return str(bundled)
@@ -103,7 +101,7 @@ def find_tool(name: str) -> str | None:
             os.path.join(program_files, "VideoLAN", "VLC", name + ".exe"),
         ]
     else:
-        # apps started from the Finder / a desktop menu get a minimal PATH
+        # GUI apps get a short PATH
         patterns = [f"/opt/homebrew/bin/{name}", f"/usr/local/bin/{name}", f"/usr/bin/{name}"]
     for pattern in patterns:
         hits = glob.glob(pattern)
@@ -113,7 +111,7 @@ def find_tool(name: str) -> str | None:
 
 
 def to_local_path(source: str) -> str:
-    """Accept a plain path or a file:// URI (as VLC reports it) and return a local path."""
+    """Path or file:// URI to a local path."""
     if "://" not in source:
         return source
     parsed = urllib.parse.urlparse(source)
@@ -126,7 +124,7 @@ def to_local_path(source: str) -> str:
 
 
 def system_env() -> dict:
-    """Environment for launching other programs: undo the packaged build's library path on Linux."""
+    """Environment for starting other programs."""
     env = dict(os.environ)
     if FROZEN and sys.platform.startswith("linux"):
         original = env.pop("LD_LIBRARY_PATH_ORIG", None)
@@ -170,9 +168,9 @@ def vlc_extension_dir() -> Path:
 
 
 def launch_command() -> str:
-    """The command (minus arguments) the VLC extension runs to start this editor."""
+    """Command the VLC extension runs to open the editor."""
     if IS_MAC and FROZEN:
-        bundle = APP_DIR.parents[1]    # .../VLC Editor.app/Contents/MacOS -> .../VLC Editor.app
+        bundle = APP_DIR.parents[1]    # the .app folder
         return f"open -n -a {shlex.quote(str(bundle))} --args"
     parts = [sys.executable] if FROZEN else [sys.executable, str(Path(__file__).resolve())]
     if IS_WINDOWS:
@@ -181,7 +179,7 @@ def launch_command() -> str:
 
 
 def install_vlc_extension() -> tuple[Path, bool]:
-    """Write the VLC extension pointing at this editor. Returns (file, whether it changed)."""
+    """Install the VLC extension. Returns (path, changed)."""
     template = BUNDLE_DIR / "vlc_editor.lua" if FROZEN else APP_DIR.parent / "vlc_extension" / "vlc_editor.lua"
     text = template.read_text(encoding="utf-8").replace("@LAUNCH@", launch_command())
     target = vlc_extension_dir() / "vlc_editor.lua"
@@ -209,7 +207,7 @@ def parse_args(argv: list[str]) -> tuple[str | None, int]:
             except ValueError:
                 pass
             i += 2
-        elif arg.startswith("-psn_"):    # process serial number older macOS adds when launched from Finder
+        elif arg.startswith("-psn_"):    # added by older macOS
             i += 1
         else:
             source = arg
@@ -228,12 +226,32 @@ def clamp(value, low, high):
     return max(low, min(high, value))
 
 
+def lerp_rect(a: QRectF, b: QRectF, t: float) -> QRectF:
+    return QRectF(a.x() + (b.x() - a.x()) * t, a.y() + (b.y() - a.y()) * t,
+                  a.width() + (b.width() - a.width()) * t, a.height() + (b.height() - a.height()) * t)
+
+
+def make_animation(parent, on_value) -> QVariantAnimation:
+    anim = QVariantAnimation(parent)
+    anim.setDuration(ANIMATION_MS)
+    anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+    anim.valueChanged.connect(on_value)
+    return anim
+
+
+def animate_to(anim: QVariantAnimation, start: float, end: float):
+    anim.stop()
+    anim.setStartValue(float(start))
+    anim.setEndValue(float(end))
+    anim.start()
+
+
 @dataclass
 class MediaInfo:
-    width: int          # display size, i.e. after the phone's rotation flag is applied
+    width: int          # after rotation
     height: int
     duration_ms: int
-    fps: str            # ffmpeg rate string, e.g. "30000/1001"
+    fps: str            # e.g. "30000/1001"
     has_audio: bool
 
 
@@ -279,11 +297,11 @@ class EditSpec:
     start_ms: int
     end_ms: int
     crop: tuple[int, int, int, int] | None = None   # w, h, x, y in display pixels
-    slow: tuple[int, int] | None = None              # absolute ms range
+    slow: tuple[int, int] | None = None              # start, end ms
     speed: float = 1.0
     mute_slow: bool = True
     smooth: bool = False
-    rotation: int = 0                                # clockwise degrees, applied before the crop
+    rotation: int = 0                                # clockwise, before the crop
 
     def output_ms(self) -> int:
         length = self.end_ms - self.start_ms
@@ -293,7 +311,7 @@ class EditSpec:
 
 
 def atempo_chain(speed: float) -> str:
-    # atempo only goes down to 0.5 per instance, so chain it for slower speeds
+    # atempo minimum is 0.5
     parts = []
     while speed < 0.5 - 1e-9:
         parts.append("atempo=0.5")
@@ -366,7 +384,7 @@ def unique_output_path(src: str) -> str:
 # ---------------------------------------------------------------- video frames from libvlc
 
 class FrameSink(QObject):
-    """Has libvlc decode into our own buffer so Qt can paint the frame and draw on top of it."""
+    """Gets frames from VLC so Qt can draw them."""
     frame_ready = Signal()
 
     def __init__(self, player: vlc.MediaPlayer, width: int, height: int):
@@ -376,7 +394,7 @@ class FrameSink(QObject):
         self._addr = ctypes.addressof(self._buf)
         self._lock = threading.Lock()
         self._latest: bytes | None = None
-        # keep references so the ctypes callbacks are not garbage collected
+        # keep the callbacks alive
         self._lock_cb = vlc.CallbackDecorators.VideoLockCb(self._on_lock)
         self._unlock_cb = vlc.CallbackDecorators.VideoUnlockCb(self._on_unlock)
         self._display_cb = vlc.CallbackDecorators.VideoDisplayCb(self._on_display)
@@ -404,24 +422,25 @@ class FrameSink(QObject):
 
 
 class ThumbLoader(QObject):
-    thumb_ready = Signal(int, QImage)
+    thumb_ready = Signal(object, int, QImage)    # tag, index, image
 
-    def start(self, ffmpeg: str, path: str, duration_ms: int, count: int):
-        threading.Thread(target=self._run, args=(ffmpeg, path, duration_ms, count), daemon=True).start()
+    def start(self, ffmpeg: str, path: str, start_ms: int, end_ms: int, count: int, tag):
+        threading.Thread(target=self._run, args=(ffmpeg, path, start_ms, end_ms, count, tag),
+                         daemon=True).start()
 
-    def _run(self, ffmpeg, path, duration_ms, count):
+    def _run(self, ffmpeg, path, start_ms, end_ms, count, tag):
         for i in range(count):
-            t = (i + 0.5) * duration_ms / count / 1000
+            t = (start_ms + (i + 0.5) * (end_ms - start_ms) / count) / 1000
             result = subprocess.run(
                 [ffmpeg, "-v", "error", "-ss", f"{t:.3f}", "-i", path, "-frames:v", "1",
                  "-vf", "scale=-2:96", "-f", "image2pipe", "-c:v", "png", "-"],
                 capture_output=True, creationflags=NO_WINDOW)
             image = QImage.fromData(result.stdout, "PNG")
             if not image.isNull():
-                self.thumb_ready.emit(i, image)
+                self.thumb_ready.emit(tag, i, image)
 
 
-# ---------------------------------------------------------------- video view with crop overlay
+# ---------------------------------------------------------------- video view
 
 class VideoView(QWidget):
     crop_changed = Signal()
@@ -441,10 +460,12 @@ class VideoView(QWidget):
         self.src_w, self.src_h = src_w, src_h
         self.image: QImage | None = None
         self.crop_mode = False
-        self.crop = QRectF(0, 0, 1, 1)       # normalised to the full frame
-        self.aspect: float | None = None     # locked width/height in pixels, None = free
-        self.rotation = 0                    # clockwise degrees; src_w / src_h are the rotated size
-        self._raw: QImage | None = None      # latest frame before rotation
+        self.crop = QRectF(0, 0, 1, 1)       # 0-1 of the frame
+        self.aspect: float | None = None     # locked shape, None = free
+        self.rotation = 0                    # clockwise degrees
+        self._raw: QImage | None = None      # frame before rotation
+        self._grow = 1.0                     # 0 = full frame shown, 1 = crop fills the view
+        self._grow_anim = make_animation(self, self._set_grow)
         self._drag: str | None = None
         self._press = QPointF()
         self._orig = QRectF()
@@ -488,7 +509,7 @@ class VideoView(QWidget):
         self.update()
 
     def rotate_cw(self):
-        """Turn the picture 90° clockwise; the crop box (and any locked shape) turns with it."""
+        """Rotate 90° clockwise, with the crop box."""
         self.rotation = (self.rotation + 90) % 360
         self.src_w, self.src_h = self.src_h, self.src_w
         c = self.crop
@@ -500,10 +521,22 @@ class VideoView(QWidget):
         self.crop_changed.emit()
         self.update()
 
-    def set_crop_mode(self, on: bool):
+    def set_crop_mode(self, on: bool, animate: bool = True):
         self.crop_mode = on
         self.setCursor(Qt.CursorShape.ArrowCursor)
+        target = 0.0 if on else 1.0
+        if animate and self.is_cropped():
+            animate_to(self._grow_anim, self._grow, target)
+        else:
+            self._grow_anim.stop()
+            self._set_grow(target)
+
+    def _set_grow(self, value):
+        self._grow = float(value)
         self.update()
+
+    def _editing(self) -> bool:
+        return self.crop_mode and self._grow == 0.0
 
     def set_aspect(self, aspect: float | None):
         self.aspect = aspect
@@ -530,28 +563,32 @@ class VideoView(QWidget):
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        if not self.crop_mode and self.is_cropped():
-            # show the result: just the cropped area, scaled to fit
-            c = self.crop
-            target = self._fit(c.width() * self.src_w, c.height() * self.src_h)
-            if self.image is not None:
-                iw, ih = self.image.width(), self.image.height()
-                source = QRectF(c.x() * iw, c.y() * ih, c.width() * iw, c.height() * ih)
-                p.drawImage(target, self.image, source)
-            return
+        c = self.crop
+        fr, cr = self.frame_rect(), self.crop_rect_px()
+        grow = self._grow if self.is_cropped() else 0.0
+        if grow > 0:
+            # grow the crop to fill the view
+            cr = lerp_rect(cr, self._fit(c.width() * self.src_w, c.height() * self.src_h), grow)
+            fr = QRectF(cr.x() - c.x() * cr.width() / c.width(), cr.y() - c.y() * cr.height() / c.height(),
+                        cr.width() / c.width(), cr.height() / c.height())
 
-        fr = self.frame_rect()
         if self.image is not None:
+            p.setOpacity(1 - grow)    # fade out the rest
             p.drawImage(fr, self.image)
-        if not self.crop_mode:
+            p.setOpacity(1)
+            if grow > 0:
+                iw, ih = self.image.width(), self.image.height()
+                p.drawImage(cr, self.image, QRectF(c.x() * iw, c.y() * ih, c.width() * iw, c.height() * ih))
+        if grow == 1 or not (self.crop_mode or grow > 0):
             return
 
-        cr = self.crop_rect_px()
         shade = QPainterPath()
         shade.setFillRule(Qt.FillRule.OddEvenFill)
         shade.addRect(fr)
         shade.addRect(cr)
-        p.fillPath(shade, QColor(0, 0, 0, 160))
+        p.fillPath(shade, QColor(0, 0, 0, int(160 * (1 - grow))))
+        if not self._editing():
+            return
 
         p.setPen(QPen(QColor(255, 255, 255, 90), 1))
         for i in (1, 2):
@@ -585,7 +622,7 @@ class VideoView(QWidget):
 
     # -- mouse
     def _hit(self, pos: QPointF) -> str | None:
-        if not self.crop_mode:
+        if not self._editing():
             return None
         r, t = self.crop_rect_px(), self.HANDLE
         corners = {"tl": r.topLeft(), "tr": r.topRight(), "bl": r.bottomLeft(), "br": r.bottomRight()}
@@ -649,7 +686,7 @@ class VideoView(QWidget):
 
     def _resize_locked(self, corner: str, nx: float, ny: float) -> QRectF:
         o = self._orig
-        ax = o.right() if "l" in corner else o.left()     # anchored opposite corner
+        ax = o.right() if "l" in corner else o.left()     # opposite corner stays put
         ay = o.bottom() if "t" in corner else o.top()
         sx = -1 if "l" in corner else 1
         sy = -1 if "t" in corner else 1
@@ -662,11 +699,12 @@ class VideoView(QWidget):
         return QRectF(ax - w if sx < 0 else ax, ay - h if sy < 0 else ay, w, h)
 
 
-# ---------------------------------------------------------------- timeline with trim + slow-mo handles
+# ---------------------------------------------------------------- timeline
 
 class Timeline(QWidget):
     seek_requested = Signal(int)
     range_changed = Signal()
+    clip_thumbs_needed = Signal(int, int)
     MARGIN = 20
     STRIP_TOP, STRIP_H = 8, 56
     BAND_GAP, BAND_H = 10, 18
@@ -680,8 +718,13 @@ class Timeline(QWidget):
         self.slow_enabled = False
         self.slow_start = self.slow_end = 0
         self.slow_label = ""
-        self.thumbs: dict[int, QImage] = {}
+        self.thumbs: dict[int, QImage] = {}         # whole video
+        self.clip_thumbs: dict[int, QImage] = {}    # clip only
+        self.clip_thumbs_range: tuple[int, int] | None = None
         self.rotation = 0
+        self.clip_mode = True
+        self._zoom = 0.0                            # 0 = whole video, 1 = clip fills the bar
+        self._zoom_anim = make_animation(self, self._set_zoom)
         self._drag: str | None = None
         self._drag_offset = 0
         self.setMouseTracking(True)
@@ -695,13 +738,17 @@ class Timeline(QWidget):
         tr = self.track()
         return QRectF(tr.left(), tr.bottom() + self.BAND_GAP, tr.width(), self.BAND_H)
 
+    def view(self) -> tuple[float, float]:
+        z = self._zoom
+        return self.start * z, self.duration + (self.end - self.duration) * z
+
     def x_of(self, ms: float) -> float:
-        tr = self.track()
-        return tr.left() + ms / self.duration * tr.width()
+        tr, (v0, v1) = self.track(), self.view()
+        return tr.left() + (ms - v0) / (v1 - v0) * tr.width()
 
     def ms_of(self, x: float) -> float:
-        tr = self.track()
-        return clamp((x - tr.left()) / tr.width(), 0, 1) * self.duration
+        tr, (v0, v1) = self.track(), self.view()
+        return v0 + clamp((x - tr.left()) / tr.width(), 0, 1) * (v1 - v0)
 
     # -- state
     def set_pos(self, ms: int):
@@ -711,6 +758,28 @@ class Timeline(QWidget):
 
     def set_thumb(self, index: int, image: QImage):
         self.thumbs[index] = image
+        self.update()
+
+    def set_clip_thumb(self, clip: tuple[int, int], index: int, image: QImage):
+        if clip == (self.start, self.end):
+            if clip != self.clip_thumbs_range:
+                self.clip_thumbs, self.clip_thumbs_range = {}, clip
+            self.clip_thumbs[index] = image
+            self.update()
+
+    def set_clip_mode(self, on: bool, animate: bool = True):
+        self.clip_mode = on
+        if not on and self.clip_thumbs_range != (self.start, self.end):
+            self.clip_thumbs_needed.emit(self.start, self.end)
+        target = 0.0 if on else 1.0
+        if animate:
+            animate_to(self._zoom_anim, self._zoom, target)
+        else:
+            self._zoom_anim.stop()
+            self._set_zoom(target)
+
+    def _set_zoom(self, value):
+        self._zoom = float(value)
         self.update()
 
     def set_rotation(self, degrees: int):
@@ -736,6 +805,8 @@ class Timeline(QWidget):
         if end is not None:
             self.end = int(clamp(end, self.start + MIN_CLIP_MS, self.duration))
         self._fit_slow()
+        if not self.clip_mode and self.clip_thumbs_range != (self.start, self.end):
+            self.clip_thumbs_needed.emit(self.start, self.end)
         self.range_changed.emit()
         self.update()
 
@@ -753,27 +824,20 @@ class Timeline(QWidget):
         tr = self.track()
         p.fillRect(tr, QColor("#2a2a2a"))
 
-        cell_w = tr.width() / self.THUMBS
-        for i, img in self.thumbs.items():
-            if self.rotation:
-                img = img.transformed(QTransform().rotate(self.rotation))
-            cell = QRectF(tr.left() + i * cell_w, tr.top(), cell_w, tr.height())
-            # centre-crop the thumbnail to the cell's shape
-            iw, ih = img.width(), img.height()
-            cell_ratio = cell.width() / cell.height()
-            if iw / ih > cell_ratio:
-                sw = ih * cell_ratio
-                source = QRectF((iw - sw) / 2, 0, sw, ih)
-            else:
-                sh = iw / cell_ratio
-                source = QRectF(0, (ih - sh) / 2, iw, sh)
-            p.drawImage(cell, img, source)
+        p.setClipRect(tr)
+        self._draw_thumbs(p, self.thumbs, 0, self.duration)
+        if self.clip_thumbs and self.clip_thumbs_range == (self.start, self.end) and self._zoom > 0:
+            p.setOpacity(self._zoom)
+            self._draw_thumbs(p, self.clip_thumbs, self.start, self.end)
+            p.setOpacity(1)
+        p.setClipping(False)
 
         xs, xe = self.x_of(self.start), self.x_of(self.end)
         dim = QColor(0, 0, 0, 175)
         p.fillRect(QRectF(tr.left(), tr.top(), xs - tr.left(), tr.height()), dim)
         p.fillRect(QRectF(xe, tr.top(), tr.right() - xe, tr.height()), dim)
 
+        p.setOpacity(1 - self._zoom)    # fade out the trim handles
         p.setPen(QPen(ACCENT, 3))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRect(QRectF(xs, tr.top() + 1.5, xe - xs, tr.height() - 3))
@@ -785,6 +849,7 @@ class Timeline(QWidget):
             p.setPen(QPen(QColor("#6b5000"), 2))
             c = grip.center()
             p.drawLine(QPointF(c.x(), c.y() - 9), QPointF(c.x(), c.y() + 9))
+        p.setOpacity(1)
 
         if self.slow_enabled:
             b = self.band()
@@ -809,15 +874,34 @@ class Timeline(QWidget):
         p.setBrush(QColor("white"))
         p.drawEllipse(QPointF(x, tr.top() - 5), 4.5, 4.5)
 
+    def _draw_thumbs(self, p: QPainter, thumbs: dict[int, QImage], start: float, end: float):
+        step = (end - start) / self.THUMBS
+        for i, img in thumbs.items():
+            if self.rotation:
+                img = img.transformed(QTransform().rotate(self.rotation))
+            x0, x1 = self.x_of(start + i * step), self.x_of(start + (i + 1) * step)
+            cell = QRectF(x0, self.STRIP_TOP, x1 - x0, self.STRIP_H)
+            # crop to fit the cell
+            iw, ih = img.width(), img.height()
+            cell_ratio = cell.width() / cell.height()
+            if iw / ih > cell_ratio:
+                sw = ih * cell_ratio
+                source = QRectF((iw - sw) / 2, 0, sw, ih)
+            else:
+                sh = iw / cell_ratio
+                source = QRectF(0, (ih - sh) / 2, iw, sh)
+            p.drawImage(cell, img, source)
+
     # -- mouse
     def _hit(self, pos: QPointF) -> str | None:
         tr = self.track()
         xs, xe = self.x_of(self.start), self.x_of(self.end)
         if tr.top() - 6 <= pos.y() <= tr.bottom() + 6:
-            if xs - self.GRIP - 3 <= pos.x() <= xs + 3:
-                return "start"
-            if xe - 3 <= pos.x() <= xe + self.GRIP + 3:
-                return "end"
+            if self.clip_mode and self._zoom == 0:
+                if xs - self.GRIP - 3 <= pos.x() <= xs + 3:
+                    return "start"
+                if xe - 3 <= pos.x() <= xe + self.GRIP + 3:
+                    return "end"
             return "scrub"
         if self.slow_enabled:
             b = self.band()
@@ -835,7 +919,7 @@ class Timeline(QWidget):
         if event.button() != Qt.MouseButton.LeftButton:
             return
         self._drag = self._hit(event.position())
-        # keep the grab point under the cursor so a handle doesn't jump when picked up
+        # so the handle doesn't jump
         anchor = {"start": self.start, "end": self.end, "slow_start": self.slow_start,
                   "slow_end": self.slow_end, "slow_move": self.slow_start}.get(self._drag)
         self._drag_offset = self.ms_of(event.position().x()) - anchor if anchor is not None else 0
@@ -857,7 +941,8 @@ class Timeline(QWidget):
             return
         ms = self.ms_of(pos.x()) - self._drag_offset
         if d == "scrub":
-            self.seek_requested.emit(int(clamp(ms, 0, self.duration)))
+            low, high = (0, self.duration) if self.clip_mode else (self.start, self.end)
+            self.seek_requested.emit(int(clamp(ms, low, high)))
             return
         if d == "start":
             self.set_trim(start=ms)
@@ -885,13 +970,13 @@ class Timeline(QWidget):
 class EditorWindow(QMainWindow):
     def __init__(self, path: str, start_ms: int, info: MediaInfo, ffmpeg: str):
         super().__init__()
-        path = os.path.normpath(path)    # libvlc refuses paths with forward slashes
+        path = os.path.normpath(path)    # libvlc needs native slashes
         self.path, self.info, self.ffmpeg = path, info, ffmpeg
         self.setWindowTitle(f"Edit Video - {Path(path).name}")
         self.pos = start_ms
-        self._pending: tuple[int, bool] | None = None    # (seek ms, keep playing) once VLC is running
+        self._pending: tuple[int, bool] | None = None    # seek to do once VLC starts
         self._rate = 1.0
-        self._loop = True     # loop the clip; off when playing from outside it
+        self._loop = True     # loop within the clip
         self._muted = False
         self._export: QProcess | None = None
 
@@ -952,6 +1037,10 @@ class EditorWindow(QMainWindow):
         top.addWidget(self.play_btn)
         top.addWidget(self.time_label)
         top.addSpacing(12)
+        self.clip_btn = self._button("Clip", self._toggle_clip, checkable=True)
+        self.clip_btn.setChecked(True)
+        self.clip_btn.setToolTip("Set the start and end")
+        top.addWidget(self.clip_btn)
         self.start_here_btn = self._button("⇤ Start here", self.start_here)
         self.start_here_btn.setToolTip("Start the clip at the current frame (I)")
         self.end_here_btn = self._button("End here ⇥", self.end_here)
@@ -970,7 +1059,7 @@ class EditorWindow(QMainWindow):
         hint = QLabel("Space play/pause · ←/→ seek · I / O start / end here · R rotate")
         hint.setObjectName("muted")
         hint.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        # in a narrow window the key hint gives way, not the clip info
+        # hint shrinks first
         hint.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         bottom.addWidget(hint, 1)
         bottom.addSpacing(16)
@@ -999,8 +1088,10 @@ class EditorWindow(QMainWindow):
             QShortcut(QKeySequence(key), self, slot, context=Qt.ShortcutContext.ApplicationShortcut)
 
         self.thumbs = ThumbLoader()
-        self.thumbs.thumb_ready.connect(self.timeline.set_thumb)
-        self.thumbs.start(ffmpeg, path, info.duration_ms, Timeline.THUMBS)
+        self.thumbs.thumb_ready.connect(self._on_thumb)
+        self.thumbs.start(ffmpeg, path, 0, info.duration_ms, Timeline.THUMBS, "all")
+        self.timeline.clip_thumbs_needed.connect(
+            lambda start, end: self.thumbs.start(ffmpeg, path, start, end, Timeline.THUMBS, (start, end)))
 
         self._update_labels()
         self.timer = QTimer(self)
@@ -1024,7 +1115,7 @@ class EditorWindow(QMainWindow):
             self._muted = mute
 
     def _restart(self, ms: int, play: bool):
-        """(Re)start VLC, then seek once it is running (VLC can't seek a stopped/ended player)."""
+        """Restart playback, then seek."""
         self.player.stop()
         self._muted = None
         self._set_mute(True)
@@ -1092,16 +1183,16 @@ class EditorWindow(QMainWindow):
     def start_here(self):
         tl = self.timeline
         if self.pos > tl.end - MIN_CLIP_MS:
-            tl.set_trim(end=tl.duration)    # new start is past the old end: release the end
+            tl.set_trim(end=tl.duration)    # start is past the end
         tl.set_trim(start=self.pos)
 
     def end_here(self):
         tl = self.timeline
         if self.pos < tl.start + MIN_CLIP_MS:
-            tl.set_trim(start=0)            # new end is before the old start: release the start
+            tl.set_trim(start=0)            # end is before the start
         tl.set_trim(end=self.pos)
         if self.player.is_playing():
-            self.player.set_pause(1)        # otherwise it would loop straight back to the start
+            self.player.set_pause(1)        # don't loop back
 
     def step(self, delta: int):
         self.seek(clamp(self.pos + delta, 0, self.timeline.duration))
@@ -1115,8 +1206,8 @@ class EditorWindow(QMainWindow):
         tl = self.timeline
         target = self.pos
         if abs(self.pos - tl.end) <= 50 or self.pos >= tl.duration - 50:
-            target = tl.start    # sitting on the clip's end: replay the clip
-        # play the clip on a loop, unless starting outside it (e.g. hunting for a new start/end)
+            target = tl.start    # at the end: replay
+        # loop only when starting inside the clip
         self._loop = tl.start <= target < tl.end
         if self.player.get_state() in (vlc.State.Ended, vlc.State.Stopped):
             self._restart(target, play=True)
@@ -1126,7 +1217,23 @@ class EditorWindow(QMainWindow):
         self.player.set_pause(0)
 
     # -- tools
+    def _on_thumb(self, tag, index: int, image: QImage):
+        if tag == "all":
+            self.timeline.set_thumb(index, image)
+        else:
+            self.timeline.set_clip_thumb(tag, index, image)
+
+    def _toggle_clip(self):
+        on = self.clip_btn.isChecked()
+        self.timeline.set_clip_mode(on)
+        tl = self.timeline
+        if not on and not tl.start <= self.pos <= tl.end:
+            self.seek(tl.start)
+        self._set_tools_visible()
+
     def _set_tools_visible(self):
+        for w in (self.start_here_btn, self.end_here_btn):
+            w.setVisible(self.clip_btn.isChecked())
         for w in self.crop_tools:
             w.setVisible(self.crop_btn.isChecked())
         for w in self.slow_tools:
@@ -1147,7 +1254,7 @@ class EditorWindow(QMainWindow):
         view.rotate_cw()
         self.timeline.set_rotation(view.rotation)
         self.rotate_btn.setText(f"⟳ {view.rotation}°" if view.rotation else "⟳ Rotate")
-        # "Original" is the picture's own shape, which just turned; a locked shape turned too (9:16 -> 16:9)
+        # shapes turn with the picture (9:16 -> 16:9)
         self.aspect_combo.setItemData(1, view.src_w / view.src_h)
         index = 0
         if view.aspect is not None:
@@ -1299,7 +1406,7 @@ VLC_MISSING = {
 
 
 def _auto_install_extension():
-    """Packaged Mac/Linux builds add themselves to VLC's menu on first run (Windows uses setup.ps1)."""
+    """Add the VLC menu item on first run (Mac/Linux)."""
     if IS_MAC and "/AppTranslocation/" in str(APP_DIR):
         QMessageBox.information(None, "VLC Editor",
                                 "To add Edit Video to VLC, move VLC Editor into the Applications folder "
@@ -1317,7 +1424,7 @@ def _auto_install_extension():
 
 
 def selftest(report: str | None) -> int:
-    """Headless check of a build: bundled ffmpeg, export, and libvlc playback. Used by CI."""
+    """Quick check of a build, used by the release workflow."""
     lines: list[str] = []
     ok = True
     try:
@@ -1347,7 +1454,7 @@ def selftest(report: str | None) -> int:
         assert abs(result.duration_ms - spec.output_ms()) < 150, "wrong slow-mo length"
 
         turned = tmp / "rotated.mp4"
-        spec = EditSpec(0, 1000, (600, 300, 20, 30), rotation=90)    # crop applies to the turned picture
+        spec = EditSpec(0, 1000, (600, 300, 20, 30), rotation=90)    # crop after rotate
         run([ffmpeg] + build_ffmpeg_args(spec, info, str(src), str(turned)))
         result = probe(ffprobe, str(turned))
         lines.append(f"rotate: {result}")
@@ -1358,7 +1465,7 @@ def selftest(report: str | None) -> int:
         lines.append(f"libvlc: {vlc.libvlc_get_version().decode()}")
         instance = vlc.Instance(["--quiet", "--no-audio"])
         if instance is None:
-            # rerun with VLC's own logging so the reason lands on stderr
+            # show VLC's log
             vlc.Instance(["--verbose=2", "--no-audio"])
             lines.append(f"LD_LIBRARY_PATH={os.environ.get('LD_LIBRARY_PATH')}")
             lines.append(f"VLC_PLUGIN_PATH={os.environ.get('VLC_PLUGIN_PATH')}")
@@ -1378,7 +1485,7 @@ def selftest(report: str | None) -> int:
         instance.release()
         lines.append(f"frames played: {len(frames)}")
         if len(frames) < 10:
-            # play again with VLC's error log on stderr to show why (e.g. a missing decoder)
+            # show VLC's log
             debug = vlc.Instance(["--verbose=1", "--no-audio"])
             debug_player = debug.media_player_new()
             FrameSink(debug_player, info.width, info.height)
@@ -1388,7 +1495,7 @@ def selftest(report: str | None) -> int:
             debug_player.stop()
             raise AssertionError("libvlc did not play the video (VLC log above)")
         lines.append("SELFTEST OK")
-    except Exception:  # noqa: BLE001 - report whatever broke
+    except Exception:  # noqa: BLE001
         ok = False
         lines += [traceback.format_exc(), "SELFTEST FAILED"]
     text = "\n".join(lines)
@@ -1435,7 +1542,7 @@ def main() -> int:
         return _fail(f"File not found:\n{path}")
     try:
         info = probe(ffprobe, path)
-    except Exception as e:  # noqa: BLE001 - anything ffprobe chokes on is reported the same way
+    except Exception as e:  # noqa: BLE001
         return _fail(f"Couldn't read this video:\n{e}")
 
     window = EditorWindow(path, min(start_ms, max(0, info.duration_ms - MIN_CLIP_MS)), info, ffmpeg)
