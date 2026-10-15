@@ -15,11 +15,12 @@ Use
   You can also start "VLC Editor" from the Start menu and pick a file.
 
   Trim      drag the yellow handles, or play to a spot and click Start here / End here (I / O)
+  Rotate    click Rotate to turn the picture 90° clockwise (click again for 180°, 270°)
   Crop      click Crop, drag the box; pick a shape (16:9, 9:16, 1:1 ...)
   Slow-mo   click Slow-mo, drag the purple bar under the timeline, pick 1/2x, 1/4x, 1/8x
   Save      writes <name>_edit.mp4 next to the original (the original is never changed)
 
-  Keys: Space play/pause, Left/Right seek 1 s (Shift = 0.1 s), I / O start / end here, Ctrl+S save
+  Keys: Space play/pause, Left/Right seek 1 s (Shift = 0.1 s), I / O start / end here, R rotate, Ctrl+S save
 
 Uninstall
   Double-click Uninstall.cmd in this folder.

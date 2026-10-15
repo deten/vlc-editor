@@ -11,28 +11,47 @@ import ctypes
 import glob
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
+import time
 import traceback
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-import vlc
+VLC_ERROR = None
+try:
+    import vlc
+except (OSError, ImportError, NameError) as e:   # libvlc missing: reported nicely in main()
+    vlc, VLC_ERROR = None, e
 from PySide6.QtCore import QObject, QPointF, QProcess, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QPainterPath, QPen, QShortcut
+from PySide6.QtGui import QColor, QImage, QKeySequence, QPainter, QPainterPath, QPen, QShortcut, QTransform
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
     QProgressDialog, QPushButton, QSizePolicy, QVBoxLayout, QWidget,
 )
 
-# packaged build: the folder holding "VLC Editor.exe"; from source: this script's folder
-APP_DIR = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve().parent
+IS_WINDOWS = sys.platform == "win32"
+IS_MAC = sys.platform == "darwin"
+FROZEN = getattr(sys, "frozen", False)
+EXE = ".exe" if IS_WINDOWS else ""
+# packaged build: the folder holding the executable; from source: this script's folder
+APP_DIR = Path(sys.executable if FROZEN else __file__).resolve().parent
+# files bundled into the packaged build (ffmpeg, the VLC extension template)
+BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", APP_DIR))
 CONFIG_FILE = APP_DIR / "config.json"
-ERROR_LOG = APP_DIR / "last_error.log"
+if IS_WINDOWS:
+    LOG_DIR = APP_DIR
+elif IS_MAC:
+    LOG_DIR = Path.home() / "Library" / "Logs" / "VLC Editor"
+else:
+    LOG_DIR = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "vlc-editor"
+ERROR_LOG = LOG_DIR / "last_error.log"
 PREVIEW_MAX = 1280       # longest side of the preview frames VLC renders for us
 MIN_CLIP_MS = 200
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -69,18 +88,23 @@ def find_tool(name: str) -> str | None:
     configured = load_config().get(name)
     if configured and Path(configured).is_file():
         return configured
-    bundled = APP_DIR / "ffmpeg" / (name + ".exe")    # shipped with the packaged build
-    if bundled.is_file():
-        return str(bundled)
+    for folder in (BUNDLE_DIR / "ffmpeg", APP_DIR / "ffmpeg"):   # shipped with the packaged build
+        bundled = folder / (name + EXE)
+        if bundled.is_file():
+            return str(bundled)
     found = shutil.which(name)
     if found:
         return found
-    local = os.environ.get("LOCALAPPDATA", "")
-    program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
-    patterns = [
-        os.path.join(local, "Microsoft", "WinGet", "Packages", "Gyan.FFmpeg*", "*", "bin", name + ".exe"),
-        os.path.join(program_files, "VideoLAN", "VLC", name + ".exe"),
-    ]
+    if IS_WINDOWS:
+        local = os.environ.get("LOCALAPPDATA", "")
+        program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+        patterns = [
+            os.path.join(local, "Microsoft", "WinGet", "Packages", "Gyan.FFmpeg*", "*", "bin", name + ".exe"),
+            os.path.join(program_files, "VideoLAN", "VLC", name + ".exe"),
+        ]
+    else:
+        # apps started from the Finder / a desktop menu get a minimal PATH
+        patterns = [f"/opt/homebrew/bin/{name}", f"/usr/local/bin/{name}", f"/usr/bin/{name}"]
     for pattern in patterns:
         hits = glob.glob(pattern)
         if hits:
@@ -96,9 +120,79 @@ def to_local_path(source: str) -> str:
     if parsed.scheme.lower() != "file":
         raise ValueError(f"Only local files can be edited (this is a {parsed.scheme}:// stream).")
     path = urllib.request.url2pathname(parsed.path)
-    if parsed.netloc and parsed.netloc.lower() != "localhost":
+    if IS_WINDOWS and parsed.netloc and parsed.netloc.lower() != "localhost":
         path = "\\\\" + parsed.netloc + path
     return path
+
+
+def system_env() -> dict:
+    """Environment for launching other programs: undo the packaged build's library path on Linux."""
+    env = dict(os.environ)
+    if FROZEN and sys.platform.startswith("linux"):
+        original = env.pop("LD_LIBRARY_PATH_ORIG", None)
+        if original:
+            env["LD_LIBRARY_PATH"] = original
+        else:
+            env.pop("LD_LIBRARY_PATH", None)
+    return env
+
+
+def open_in_vlc(path: str):
+    if IS_MAC:
+        subprocess.Popen(["open", "-a", "VLC", path])
+        return
+    vlc_exe = find_tool("vlc")
+    if vlc_exe:
+        subprocess.Popen([vlc_exe, path], env=system_env())
+    elif IS_WINDOWS:
+        os.startfile(path)
+    else:
+        subprocess.Popen(["xdg-open", path], env=system_env())
+
+
+def show_in_folder(path: str):
+    if IS_WINDOWS:
+        subprocess.Popen(f'explorer /select,"{path}"')
+    elif IS_MAC:
+        subprocess.Popen(["open", "-R", path])
+    else:
+        subprocess.Popen(["xdg-open", os.path.dirname(path)], env=system_env())
+
+
+# ---------------------------------------------------------------- VLC menu item
+
+def vlc_extension_dir() -> Path:
+    if IS_WINDOWS:
+        return Path(os.environ["APPDATA"]) / "vlc" / "lua" / "extensions"
+    if IS_MAC:
+        return Path.home() / "Library" / "Application Support" / "org.videolan.vlc" / "lua" / "extensions"
+    return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "vlc" / "lua" / "extensions"
+
+
+def launch_command() -> str:
+    """The command (minus arguments) the VLC extension runs to start this editor."""
+    if IS_MAC and FROZEN:
+        bundle = APP_DIR.parents[1]    # .../VLC Editor.app/Contents/MacOS -> .../VLC Editor.app
+        return f"open -n -a {shlex.quote(str(bundle))} --args"
+    parts = [sys.executable] if FROZEN else [sys.executable, str(Path(__file__).resolve())]
+    if IS_WINDOWS:
+        return " ".join(f'"{p}"' for p in parts)
+    return " ".join(shlex.quote(p) for p in parts)
+
+
+def install_vlc_extension() -> tuple[Path, bool]:
+    """Write the VLC extension pointing at this editor. Returns (file, whether it changed)."""
+    template = BUNDLE_DIR / "vlc_editor.lua" if FROZEN else APP_DIR.parent / "vlc_extension" / "vlc_editor.lua"
+    text = template.read_text(encoding="utf-8").replace("@LAUNCH@", launch_command())
+    target = vlc_extension_dir() / "vlc_editor.lua"
+    try:
+        changed = target.read_text(encoding="utf-8") != text
+    except OSError:
+        changed = True
+    if changed:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+    return target, changed
 
 
 def parse_args(argv: list[str]) -> tuple[str | None, int]:
@@ -115,6 +209,8 @@ def parse_args(argv: list[str]) -> tuple[str | None, int]:
             except ValueError:
                 pass
             i += 2
+        elif arg.startswith("-psn_"):    # process serial number older macOS adds when launched from Finder
+            i += 1
         else:
             source = arg
             i += 1
@@ -187,6 +283,7 @@ class EditSpec:
     speed: float = 1.0
     mute_slow: bool = True
     smooth: bool = False
+    rotation: int = 0                                # clockwise degrees, applied before the crop
 
     def output_ms(self) -> int:
         length = self.end_ms - self.start_ms
@@ -210,7 +307,9 @@ def build_ffmpeg_args(spec: EditSpec, info: MediaInfo, src: str, dst: str) -> li
     length = (spec.end_ms - spec.start_ms) / 1000
     args = ["-hide_banner", "-y", "-ss", f"{start:.3f}", "-t", f"{length:.3f}", "-i", src]
 
-    base = "crop={0}:{1}:{2}:{3}".format(*spec.crop) if spec.crop else "null"
+    rotate = {90: "transpose=clock", 180: "hflip,vflip", 270: "transpose=cclock"}.get(spec.rotation % 360)
+    crop = "crop={0}:{1}:{2}:{3}".format(*spec.crop) if spec.crop else None
+    base = ",".join(f for f in (rotate, crop) if f) or "null"
     audio = info.has_audio
 
     segments = [(0.0, length, 1.0)]
@@ -344,6 +443,8 @@ class VideoView(QWidget):
         self.crop_mode = False
         self.crop = QRectF(0, 0, 1, 1)       # normalised to the full frame
         self.aspect: float | None = None     # locked width/height in pixels, None = free
+        self.rotation = 0                    # clockwise degrees; src_w / src_h are the rotated size
+        self._raw: QImage | None = None      # latest frame before rotation
         self._drag: str | None = None
         self._press = QPointF()
         self._orig = QRectF()
@@ -382,7 +483,21 @@ class VideoView(QWidget):
 
     # -- public
     def set_image(self, image: QImage):
-        self.image = image
+        self._raw = image
+        self.image = image.transformed(QTransform().rotate(self.rotation)) if self.rotation else image
+        self.update()
+
+    def rotate_cw(self):
+        """Turn the picture 90° clockwise; the crop box (and any locked shape) turns with it."""
+        self.rotation = (self.rotation + 90) % 360
+        self.src_w, self.src_h = self.src_h, self.src_w
+        c = self.crop
+        self.crop = QRectF(1 - c.y() - c.height(), c.x(), c.height(), c.width())
+        if self.aspect is not None:
+            self.aspect = 1 / self.aspect
+        if self._raw is not None:
+            self.set_image(self._raw)
+        self.crop_changed.emit()
         self.update()
 
     def set_crop_mode(self, on: bool):
@@ -566,6 +681,7 @@ class Timeline(QWidget):
         self.slow_start = self.slow_end = 0
         self.slow_label = ""
         self.thumbs: dict[int, QImage] = {}
+        self.rotation = 0
         self._drag: str | None = None
         self._drag_offset = 0
         self.setMouseTracking(True)
@@ -595,6 +711,10 @@ class Timeline(QWidget):
 
     def set_thumb(self, index: int, image: QImage):
         self.thumbs[index] = image
+        self.update()
+
+    def set_rotation(self, degrees: int):
+        self.rotation = degrees
         self.update()
 
     def set_slow_enabled(self, on: bool):
@@ -635,6 +755,8 @@ class Timeline(QWidget):
 
         cell_w = tr.width() / self.THUMBS
         for i, img in self.thumbs.items():
+            if self.rotation:
+                img = img.transformed(QTransform().rotate(self.rotation))
             cell = QRectF(tr.left() + i * cell_w, tr.top(), cell_w, tr.height())
             # centre-crop the thumbnail to the cell's shape
             iw, ih = img.width(), img.height()
@@ -794,6 +916,8 @@ class EditorWindow(QMainWindow):
         self.time_label = QLabel()
         self.time_label.setObjectName("muted")
 
+        self.rotate_btn = self._button("⟳ Rotate", self.rotate)
+        self.rotate_btn.setToolTip("Rotate 90° clockwise (R)")
         self.crop_btn = self._button("Crop", self._toggle_crop, checkable=True)
         self.aspect_combo = QComboBox()
         for label, value in (("Free", None), ("Original", info.width / info.height), ("16:9", 16 / 9),
@@ -835,6 +959,7 @@ class EditorWindow(QMainWindow):
         top.addWidget(self.start_here_btn)
         top.addWidget(self.end_here_btn)
         top.addStretch(1)
+        top.addWidget(self.rotate_btn)
         self.crop_tools = [self.aspect_combo, self.reset_crop_btn]
         self.slow_tools = [self.speed_combo, self.whole_btn, self.audio_combo, self.smooth_chk]
         for w in [self.crop_btn, *self.crop_tools, self.slow_btn, *self.slow_tools]:
@@ -842,10 +967,12 @@ class EditorWindow(QMainWindow):
 
         bottom = QHBoxLayout()
         bottom.addWidget(self.info_label)
-        bottom.addStretch(1)
-        hint = QLabel("Space play/pause · ←/→ seek · I / O start / end here")
+        hint = QLabel("Space play/pause · ←/→ seek · I / O start / end here · R rotate")
         hint.setObjectName("muted")
-        bottom.addWidget(hint)
+        hint.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        # in a narrow window the key hint gives way, not the clip info
+        hint.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        bottom.addWidget(hint, 1)
         bottom.addSpacing(16)
         bottom.addWidget(self.save_btn)
 
@@ -865,6 +992,7 @@ class EditorWindow(QMainWindow):
             "Shift+Left": lambda: self.step(-100), "Shift+Right": lambda: self.step(100),
             "I": self.start_here,
             "O": self.end_here,
+            "R": self.rotate,
             "Ctrl+S": self.save,
         }
         for key, slot in shortcuts.items():
@@ -1014,6 +1142,27 @@ class EditorWindow(QMainWindow):
         self.aspect_combo.blockSignals(False)
         self.view.reset_crop()
 
+    def rotate(self):
+        view = self.view
+        view.rotate_cw()
+        self.timeline.set_rotation(view.rotation)
+        self.rotate_btn.setText(f"⟳ {view.rotation}°" if view.rotation else "⟳ Rotate")
+        # "Original" is the picture's own shape, which just turned; a locked shape turned too (9:16 -> 16:9)
+        self.aspect_combo.setItemData(1, view.src_w / view.src_h)
+        index = 0
+        if view.aspect is not None:
+            if self.aspect_combo.currentIndex() == 1:
+                index = 1
+            else:
+                index = next((i for i in range(2, self.aspect_combo.count())
+                              if abs(self.aspect_combo.itemData(i) - view.aspect) < 1e-6), 0)
+            if index == 0:
+                view.aspect = None
+        self.aspect_combo.blockSignals(True)
+        self.aspect_combo.setCurrentIndex(index)
+        self.aspect_combo.blockSignals(False)
+        self._update_labels()
+
     def _toggle_slow(self):
         self.timeline.set_slow_enabled(self.slow_btn.isChecked())
         self._set_tools_visible()
@@ -1024,7 +1173,7 @@ class EditorWindow(QMainWindow):
         slow = (tl.slow_start, tl.slow_end) if tl.slow_enabled else None
         return EditSpec(tl.start, tl.end, self.view.crop_pixels(), slow,
                         self.speed_combo.currentData(), bool(self.audio_combo.currentData()),
-                        self.smooth_chk.isChecked())
+                        self.smooth_chk.isChecked(), self.view.rotation)
 
     def _update_labels(self):
         self.timeline.slow_label = self.speed_combo.currentText()
@@ -1033,8 +1182,10 @@ class EditorWindow(QMainWindow):
         text = f"Clip {fmt_time(spec.end_ms - spec.start_ms)}"
         if spec.slow:
             text += f"  →  {fmt_time(spec.output_ms())} with slow-mo"
-        w, h = spec.crop[:2] if spec.crop else (self.info.width, self.info.height)
+        w, h = spec.crop[:2] if spec.crop else (self.view.src_w, self.view.src_h)
         text += f"   ·   {w}×{h}" + ("  (cropped)" if spec.crop else "")
+        if spec.rotation:
+            text += f"  (rotated {spec.rotation}°)"
         self.info_label.setText(text)
 
     # -- export
@@ -1107,13 +1258,9 @@ class EditorWindow(QMainWindow):
         box.addButton("Close", QMessageBox.ButtonRole.RejectRole)
         box.exec()
         if box.clickedButton() is open_btn:
-            vlc_exe = find_tool("vlc")
-            if vlc_exe:
-                subprocess.Popen([vlc_exe, dst])
-            else:
-                os.startfile(dst)
+            open_in_vlc(dst)
         elif box.clickedButton() is folder_btn:
-            subprocess.Popen(f'explorer /select,"{dst}"')
+            show_in_folder(dst)
 
     def closeEvent(self, event):
         if self._export is not None:
@@ -1131,6 +1278,7 @@ class EditorWindow(QMainWindow):
 def _excepthook(exc_type, exc, tb):
     text = "".join(traceback.format_exception(exc_type, exc, tb))
     try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
         ERROR_LOG.write_text(text, encoding="utf-8")
     except OSError:
         pass
@@ -1142,19 +1290,126 @@ def _fail(message: str) -> int:
     return 1
 
 
+VLC_MENU = "VLC > Extensions > Edit Video" if IS_MAC else "View > Edit Video"
+VLC_MISSING = {
+    "win32": "Install the 64-bit VLC from https://www.videolan.org",
+    "darwin": "Install VLC from https://www.videolan.org into the Applications folder",
+}.get(sys.platform, "Install VLC from your distribution (not Flatpak/Snap):\n"
+                    "  Ubuntu: sudo apt install vlc\n  Fedora: enable RPM Fusion, then sudo dnf install vlc")
+
+
+def _auto_install_extension():
+    """Packaged Mac/Linux builds add themselves to VLC's menu on first run (Windows uses setup.ps1)."""
+    if IS_MAC and "/AppTranslocation/" in str(APP_DIR):
+        QMessageBox.information(None, "VLC Editor",
+                                "To add Edit Video to VLC, move VLC Editor into the Applications folder "
+                                "and open it from there (see the README).")
+        return
+    try:
+        _, changed = install_vlc_extension()
+    except OSError as e:
+        QMessageBox.warning(None, "VLC Editor", f"Couldn't add Edit Video to VLC:\n{e}")
+        return
+    if changed:
+        QMessageBox.information(None, "VLC Editor",
+                                f"Edit Video has been added to VLC.\n\n"
+                                f"Restart VLC, open a video, then choose {VLC_MENU}.")
+
+
+def selftest(report: str | None) -> int:
+    """Headless check of a build: bundled ffmpeg, export, and libvlc playback. Used by CI."""
+    lines: list[str] = []
+    ok = True
+    try:
+        ffmpeg, ffprobe = find_tool("ffmpeg"), find_tool("ffprobe")
+        lines += [f"platform: {sys.platform}", f"ffmpeg: {ffmpeg}", f"ffprobe: {ffprobe}"]
+        assert ffmpeg and ffprobe, "ffmpeg / ffprobe not found"
+        tmp = Path(tempfile.mkdtemp(prefix="vlc-editor-test-"))
+        plain, src, out = tmp / "plain.mp4", tmp / "src.mp4", tmp / "out.mp4"
+
+        def run(args):
+            result = subprocess.run(args, capture_output=True, creationflags=NO_WINDOW)
+            assert result.returncode == 0, result.stderr.decode(errors="replace")[-1500:]
+
+        run([ffmpeg, "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=4",
+             "-f", "lavfi", "-i", "sine=duration=4", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+             "-c:a", "aac", "-shortest", str(plain)])
+        run([ffmpeg, "-v", "error", "-y", "-display_rotation", "90", "-i", str(plain), "-c", "copy", str(src)])
+        info = probe(ffprobe, str(src))
+        lines.append(f"probe: {info}")
+        assert (info.width, info.height) == (360, 640), "phone rotation flag not detected"
+
+        spec = EditSpec(500, 3500, (200, 300, 10, 20), (1000, 2000), 0.5)
+        run([ffmpeg] + build_ffmpeg_args(spec, info, str(src), str(out)))
+        result = probe(ffprobe, str(out))
+        lines.append(f"export: {result}")
+        assert (result.width, result.height) == (200, 300), "wrong crop size"
+        assert abs(result.duration_ms - spec.output_ms()) < 150, "wrong slow-mo length"
+
+        turned = tmp / "rotated.mp4"
+        spec = EditSpec(0, 1000, (600, 300, 20, 30), rotation=90)    # crop applies to the turned picture
+        run([ffmpeg] + build_ffmpeg_args(spec, info, str(src), str(turned)))
+        result = probe(ffprobe, str(turned))
+        lines.append(f"rotate: {result}")
+        assert (result.width, result.height) == (600, 300), "wrong size after rotate + crop"
+
+        assert vlc is not None, f"libvlc could not be loaded: {VLC_ERROR}"
+        app = QApplication.instance() or QApplication([])
+        lines.append(f"libvlc: {vlc.libvlc_get_version().decode()}")
+        instance = vlc.Instance(["--quiet", "--no-audio"])
+        player = instance.media_player_new()
+        sink = FrameSink(player, info.width, info.height)
+        frames = []
+        sink.frame_ready.connect(lambda: frames.append(1))
+        player.set_media(instance.media_new_path(str(src)))
+        player.play()
+        deadline = time.time() + 20
+        while len(frames) < 10 and time.time() < deadline:
+            app.processEvents()
+            time.sleep(0.02)
+        player.stop()
+        player.release()
+        instance.release()
+        lines.append(f"frames played: {len(frames)}")
+        assert len(frames) >= 10, "libvlc did not play the video"
+        lines.append("SELFTEST OK")
+    except Exception:  # noqa: BLE001 - report whatever broke
+        ok = False
+        lines += [traceback.format_exc(), "SELFTEST FAILED"]
+    text = "\n".join(lines)
+    if report:
+        Path(report).write_text(text, encoding="utf-8")
+    if sys.stdout:
+        print(text)
+    return 0 if ok else 1
+
+
 def main() -> int:
+    argv = sys.argv[1:]
+    if "--selftest" in argv:
+        i = argv.index("--selftest")
+        return selftest(argv[i + 1] if i + 1 < len(argv) else None)
+    if "--install-extension" in argv:
+        target, _ = install_vlc_extension()
+        print(f"VLC extension written to {target}\nRestart VLC, then choose {VLC_MENU}.")
+        return 0
+
     app = QApplication(sys.argv)
     app.setApplicationName("VLC Editor")
     app.setStyleSheet(STYLE)
     sys.excepthook = _excepthook
 
+    if vlc is None:
+        return _fail(f"VLC was not found.\n\n{VLC_MISSING}, then try again.")
+    if FROZEN and not IS_WINDOWS:
+        _auto_install_extension()
     try:
-        path, start_ms = parse_args(sys.argv[1:])
+        path, start_ms = parse_args(argv)
     except ValueError as e:
         return _fail(str(e))
     ffmpeg, ffprobe = find_tool("ffmpeg"), find_tool("ffprobe")
     if not (ffmpeg and ffprobe):
-        return _fail("ffmpeg was not found. Run install.ps1 again, or add ffmpeg to config.json.")
+        return _fail("ffmpeg was not found. Reinstall VLC Editor, or add ffmpeg to config.json.")
     if not path:
         path, _ = QFileDialog.getOpenFileName(
             None, "Choose a video to edit", "",

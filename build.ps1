@@ -1,7 +1,7 @@
-# Builds dist\VLC-Editor-<version>.zip: a standalone package for other PCs (only VLC needed there).
+# Builds dist\VLC-Editor-<version>-windows-x64.zip: a standalone package for other PCs (only VLC needed there).
 # Run from PowerShell:  powershell -ExecutionPolicy Bypass -File build.ps1
 $ErrorActionPreference = 'Stop'
-$version = '1.1'
+$version = (Get-Content (Join-Path $PSScriptRoot 'VERSION') -TotalCount 1).Trim()
 $root = $PSScriptRoot
 $py = Join-Path $root '.venv\Scripts\python.exe'
 $build = Join-Path $root 'build'
@@ -44,7 +44,8 @@ Copy-Item (Join-Path (Split-Path $ffbin) 'LICENSE.txt') (Join-Path $ffdest 'LICE
 
 # 3. Installer files
 Copy-Item (Join-Path $root 'vlc_extension\vlc_editor.lua') $stage
-Copy-Item (Join-Path $root 'packaging\setup.ps1'), (Join-Path $root 'packaging\README.txt') $stage
+Copy-Item (Join-Path $root 'packaging\setup.ps1') $stage
+Copy-Item (Join-Path $root 'packaging\README-windows.txt') (Join-Path $stage 'README.txt')
 foreach ($cmd in 'Install.cmd', 'Uninstall.cmd') {
     # batch files need CRLF line endings
     $text = [IO.File]::ReadAllText((Join-Path $root "packaging\$cmd")) -replace "`r?`n", "`r`n"
@@ -53,7 +54,7 @@ foreach ($cmd in 'Install.cmd', 'Uninstall.cmd') {
 
 # 4. Zip
 New-Item -ItemType Directory -Force $dist | Out-Null
-$zip = Join-Path $dist "VLC-Editor-$version.zip"
+$zip = Join-Path $dist "VLC-Editor-$version-windows-x64.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }
 Compress-Archive -Path $stage -DestinationPath $zip -CompressionLevel Optimal
 '{0}  ({1:N0} MB)' -f $zip, ((Get-Item $zip).Length / 1MB)
