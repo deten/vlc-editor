@@ -70,6 +70,14 @@ EXTRA=()
     --exclude-module tkinter --exclude-module unittest \
     "$ROOT/editor/vlc_editor.py"
 
+# libvlc must come from the user's installed VLC: a bundled copy looks for VLC's plugins
+# inside the app (finds none, so VLC won't start) and wouldn't match other distributions
+VLC_COPIES=$(find "$BUILD/pyinstaller/dist" -name 'libvlc*' \( -type f -o -type l \))
+if [ -n "$VLC_COPIES" ]; then
+    echo "Removing bundled VLC libraries:"; echo "$VLC_COPIES"
+    echo "$VLC_COPIES" | while IFS= read -r f; do rm -f "$f"; done
+fi
+
 STAGE=$BUILD/stage
 if [ "$(uname -s)" = Darwin ]; then
     mkdir -p "$STAGE"
