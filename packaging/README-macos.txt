@@ -34,4 +34,9 @@ Uninstall
   Move VLC Editor to the Bin, and delete
   ~/Library/Application Support/org.videolan.vlc/lua/extensions/vlc_editor.lua
 
+Problems?
+  Open an issue at https://github.com/deten/vlc-editor/issues and attach
+  vlc-editor.log. To find it, in Finder choose Go > Go to Folder and enter:
+    ~/Library/Logs/VLC Editor
+
 Includes ffmpeg (https://ffmpeg.martin-riedl.de).

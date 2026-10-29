@@ -33,4 +33,8 @@ If it won't open
 Uninstall
   ./vlc-editor/install.sh --uninstall
 
+Problems?
+  Open an issue at https://github.com/deten/vlc-editor/issues and attach
+  ~/.local/state/vlc-editor/vlc-editor.log
+
 Includes ffmpeg (https://github.com/BtbN/FFmpeg-Builds).

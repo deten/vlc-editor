@@ -7,7 +7,9 @@ from __future__ import annotations
 import ctypes
 import glob
 import json
+import logging
 import os
+import platform
 import shlex
 import shutil
 import subprocess
@@ -19,6 +21,7 @@ import traceback
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 VLC_ERROR = None
@@ -48,7 +51,8 @@ elif IS_MAC:
     LOG_DIR = Path.home() / "Library" / "Logs" / "VLC Editor"
 else:
     LOG_DIR = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "vlc-editor"
-ERROR_LOG = LOG_DIR / "last_error.log"
+LOG_FILE = LOG_DIR / "vlc-editor.log"
+log = logging.getLogger("vlc-editor")
 PREVIEW_MAX = 1280       # max preview size
 MIN_CLIP_MS = 200
 ANIMATION_MS = 250
@@ -1335,26 +1339,43 @@ class EditorWindow(QMainWindow):
             cancelled.append(True)
             proc.kill()
 
-        def on_finished(code, status):
-            errors = bytes(proc.readAllStandardError()).decode(errors="replace").strip()
+        def close_dialog():
             dialog.canceled.disconnect()
             dialog.hide()
             dialog.deleteLater()
             self._export = None
+
+        def on_finished(code, status):
+            errors = bytes(proc.readAllStandardError()).decode(errors="replace").strip()
+            close_dialog()
             if cancelled:
+                log.info("save cancelled")
                 try:
                     os.remove(dst)
                 except OSError:
                     pass
             elif code == 0 and status == QProcess.ExitStatus.NormalExit:
+                log.info("saved")
                 self._saved(dst, spec)
             else:
-                QMessageBox.critical(self, "VLC Editor", "Saving failed.\n\n" + errors[-1500:])
+                log.error("save failed, exit code %s\n%s", code, errors)
+                QMessageBox.critical(self, "VLC Editor", f"Saving failed.\n\n{errors[-1500:]}\n\nLog: {LOG_FILE}")
 
+        # finished isn't sent if ffmpeg can't start
+        def on_error(error):
+            if error == QProcess.ProcessError.FailedToStart:
+                log.error("ffmpeg failed to start: %s", proc.errorString())
+                close_dialog()
+                QMessageBox.critical(self, "VLC Editor",
+                                     f"Saving failed. ffmpeg could not start.\n\n{proc.errorString()}\n\nLog: {LOG_FILE}")
+
+        args = build_ffmpeg_args(spec, self.info, self.path, dst)
+        log.info("save %s\n%s", dst, subprocess.list2cmdline([self.ffmpeg, *args]))
         proc.readyReadStandardOutput.connect(on_output)
         proc.finished.connect(on_finished)
+        proc.errorOccurred.connect(on_error)
         dialog.canceled.connect(on_cancel)
-        proc.start(self.ffmpeg, build_ffmpeg_args(spec, self.info, self.path, dst))
+        proc.start(self.ffmpeg, args)
 
     def _saved(self, dst: str, spec: EditSpec):
         box = QMessageBox(self)
@@ -1382,17 +1403,34 @@ class EditorWindow(QMainWindow):
 
 # ---------------------------------------------------------------- entry point
 
-def _excepthook(exc_type, exc, tb):
-    text = "".join(traceback.format_exception(exc_type, exc, tb))
+def app_version() -> str:
+    for p in (BUNDLE_DIR / "VERSION", APP_DIR.parent / "VERSION"):
+        if p.is_file():
+            return p.read_text().strip()
+    return "dev"
+
+
+def setup_log():
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
-        ERROR_LOG.write_text(text, encoding="utf-8")
+        handler = RotatingFileHandler(LOG_FILE, maxBytes=500_000, backupCount=1, encoding="utf-8")
     except OSError:
-        pass
-    QMessageBox.critical(None, "VLC Editor error", text[-2000:])
+        return
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s", "%Y-%m-%d %H:%M:%S"))
+    log.addHandler(handler)
+    log.setLevel(logging.INFO)
+    vlc_version = vlc.libvlc_get_version().decode() if vlc else f"not found ({VLC_ERROR})"
+    log.info("start: VLC Editor %s, %s, VLC %s", app_version(), platform.platform(), vlc_version)
+
+
+def _excepthook(exc_type, exc, tb):
+    text = "".join(traceback.format_exception(exc_type, exc, tb))
+    log.error("crash\n%s", text)
+    QMessageBox.critical(None, "VLC Editor error", f"{text[-2000:]}\nLog: {LOG_FILE}")
 
 
 def _fail(message: str) -> int:
+    log.error(message)
     QMessageBox.critical(None, "VLC Editor", message)
     return 1
 
@@ -1520,6 +1558,8 @@ def main() -> int:
     app.setApplicationName("VLC Editor")
     app.setStyleSheet(STYLE)
     sys.excepthook = _excepthook
+    setup_log()
+    log.info("args: %s", argv)
 
     if vlc is None:
         return _fail(f"VLC was not found.\n\n{VLC_MISSING}, then try again.")
@@ -1530,6 +1570,7 @@ def main() -> int:
     except ValueError as e:
         return _fail(str(e))
     ffmpeg, ffprobe = find_tool("ffmpeg"), find_tool("ffprobe")
+    log.info("ffmpeg: %s", ffmpeg)
     if not (ffmpeg and ffprobe):
         return _fail("ffmpeg was not found. Reinstall VLC Editor, or add ffmpeg to config.json.")
     if not path:
@@ -1544,6 +1585,7 @@ def main() -> int:
         info = probe(ffprobe, path)
     except Exception as e:  # noqa: BLE001
         return _fail(f"Couldn't read this video:\n{e}")
+    log.info("video: %s, %s", path, info)
 
     window = EditorWindow(path, min(start_ms, max(0, info.duration_ms - MIN_CLIP_MS)), info, ffmpeg)
     window.resize(1180, 800)

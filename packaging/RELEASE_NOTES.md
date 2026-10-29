@@ -25,3 +25,6 @@ Unzip, run **Install.cmd**, restart VLC. Then **View > Edit Video**.
      `sudo dnf swap ffmpeg-free ffmpeg --allowerasing` and `sudo dnf install vlc vlc-plugins-freeworld`
 2. `tar -xzf VLC-Editor-*-linux-x86_64.tar.gz && ./vlc-editor/install.sh`
 3. Restart VLC. Then **View > Edit Video**.
+
+### Problems?
+[Open an issue](https://github.com/deten/vlc-editor/issues/new?template=problem.md) and attach `vlc-editor.log`. The README says where to find it.

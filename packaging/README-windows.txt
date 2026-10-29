@@ -23,4 +23,9 @@ Use
 Uninstall
   Run Uninstall.cmd.
 
+Problems?
+  Open an issue at https://github.com/deten/vlc-editor/issues and attach
+  vlc-editor.log. To find it, paste this into the Explorer address bar:
+    %LOCALAPPDATA%\Programs\VLC Editor
+
 Includes ffmpeg (https://github.com/BtbN/FFmpeg-Builds).

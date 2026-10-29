@@ -15,6 +15,7 @@ $ffmpegUrl = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffm
 & $py -m pip install --quiet --disable-pip-version-check pyinstaller
 & $py -m PyInstaller --noconfirm --clean --windowed --name 'VLC Editor' `
     --distpath (Join-Path $pyi 'dist') --workpath (Join-Path $pyi 'work') --specpath $pyi `
+    --add-data "$(Join-Path $root 'VERSION');." `
     --exclude-module tkinter --exclude-module unittest `
     (Join-Path $root 'editor\vlc_editor.py')
 if ($LASTEXITCODE) { throw 'PyInstaller failed' }

@@ -4,4 +4,4 @@ dist/
 __pycache__/
 *.pyc
 editor/config.json
-editor/last_error.log
+editor/*.log

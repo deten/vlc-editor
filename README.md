@@ -49,6 +49,18 @@ On macOS 14 or earlier, Control-click the app and choose **Open**.
 - Fedora: enable [RPM Fusion](https://rpmfusion.org/Configuration), then
   `sudo dnf swap ffmpeg-free ffmpeg --allowerasing` and `sudo dnf install vlc vlc-plugins-freeworld`
 
+## Having problems?
+
+[Open an issue](https://github.com/deten/vlc-editor/issues/new?template=problem.md) and attach `vlc-editor.log`:
+
+| System | Log folder |
+|---|---|
+| Windows | `%LOCALAPPDATA%\Programs\VLC Editor` (paste into the Explorer address bar) |
+| Mac | `~/Library/Logs/VLC Editor` (Finder: **Go > Go to Folder**) |
+| Linux | `~/.local/state/vlc-editor` |
+
+The log lists the names and folders of videos you've edited.
+
 ## Run from source
 
 Windows (needs VLC, Python 3.12 and ffmpeg):

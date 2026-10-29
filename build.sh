@@ -63,7 +63,7 @@ EXTRA=()
     --distpath "$BUILD/pyinstaller/dist" --workpath "$BUILD/pyinstaller/work" --specpath "$BUILD/pyinstaller" \
     --osx-bundle-identifier io.github.deten.vlc-editor \
     --add-binary "$FF/ffmpeg:ffmpeg" --add-binary "$FF/ffprobe:ffmpeg" \
-    --add-data "$ROOT/vlc_extension/vlc_editor.lua:." \
+    --add-data "$ROOT/vlc_extension/vlc_editor.lua:." --add-data "$ROOT/VERSION:." \
     ${EXTRA[@]+"${EXTRA[@]}"} \
     --exclude-module tkinter --exclude-module unittest \
     "$ROOT/editor/vlc_editor.py"
